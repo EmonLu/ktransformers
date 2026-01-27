@@ -12,7 +12,9 @@
 
 #include <cstddef>
 
-#include "cpu_backend/cpuinfer.h"
+// #include "cpu_backend/cpuinfer.h"
+#include "cpu_backend/cpuinfer_with_mapped_callback.h"
+MappedHostCallback* CPUInfer::callback_manager_ = nullptr;
 #include "cpu_backend/worker_pool.h"
 #include "operators/common.hpp"
 
@@ -163,7 +165,8 @@ class MOEBindings {
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::warm_up, args_->moe);
+      // args_->cpuinfer->enqueue(&TP_MOE<T>::warm_up, args_->moe);
+      args_->moe->warm_up();
     }
     static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe) {
       Args* args = new Args{nullptr, moe.get()};
@@ -178,7 +181,8 @@ class MOEBindings {
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::load_weights, args_->moe);
+      // args_->cpuinfer->enqueue(&TP_MOE<T>::load_weights, args_->moe);
+      args_->moe->load_weights();
     }
     static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe,
                                                             const uintptr_t physical_to_logical_map = 0) {
@@ -210,8 +214,12 @@ class MOEBindings {
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::forward_binding, args_->moe, args_->qlen, args_->k, args_->expert_ids,
-                               args_->weights, args_->input, args_->output, args_->incremental);
+      nvtxRangePushA("forward");
+      // args_->cpuinfer->enqueue(&TP_MOE<T>::forward_binding, args_->moe, args_->qlen, args_->k, args_->expert_ids,
+      //                          args_->weights, args_->input, args_->output, args_->incremental);
+      args_->moe->forward_binding(args_->qlen, args_->k, args_->expert_ids, args_->weights, args_->input, args_->output,
+                             args_->incremental);
+      nvtxRangePop();
     }
     static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe, intptr_t qlen, int k,
                                                             intptr_t expert_ids, intptr_t weights, intptr_t input,
@@ -270,9 +278,11 @@ void bind_moe_module(py::module_& moe_module, const char* name) {
 
       static void inner(void* args) {
         Args* args_ = (Args*)args;
-        args_->cpuinfer->enqueue(&MoeClass::write_weight_scale_to_buffer, args_->moe, args_->gpu_tp_count,
-                                 args_->expert_id, args_->w13_weight_ptrs, args_->w13_scale_ptrs, args_->w2_weight_ptrs,
-                                 args_->w2_scale_ptrs);
+        // args_->cpuinfer->enqueue(&MoeClass::write_weight_scale_to_buffer, args_->moe, args_->gpu_tp_count,
+        //                          args_->expert_id, args_->w13_weight_ptrs, args_->w13_scale_ptrs, args_->w2_weight_ptrs,
+        //                          args_->w2_scale_ptrs);
+        args_->moe->write_weight_scale_to_buffer(args_->gpu_tp_count, args_->expert_id, args_->w13_weight_ptrs,
+                                               args_->w13_scale_ptrs, args_->w2_weight_ptrs, args_->w2_scale_ptrs);
       }
 
       static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe, int gpu_tp_count,

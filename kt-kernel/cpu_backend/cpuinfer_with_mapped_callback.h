@@ -30,6 +30,7 @@
 #include "llama.cpp/ggml-impl.h"
 #include "task_queue.h"
 #include "worker_pool.h"
+#include "mapped_host_callback.h"
 
 #include <nvtx3/nvToolsExt.h>
 
@@ -39,6 +40,7 @@ class CPUInfer {
     printf("CPUInfer[0x%lx]: Hello\n", (intptr_t)this);
     backend_ = new WorkerPool(thread_num);
     task_queue_ = new TaskQueue();
+    callback_manager_ = new MappedHostCallback();
     for (int i = 0; i < (1 << 16); ++i) {
       ggml_table_f32_f16[i] = GGML_COMPUTE_FP16_TO_FP32(i);
     }
@@ -47,6 +49,7 @@ class CPUInfer {
     printf("CPUInfer[0x%lx]: Hello\n", (intptr_t)this);
     backend_ = new WorkerPool(thread_num, numa_id);
     task_queue_ = new TaskQueue();
+    callback_manager_ = new MappedHostCallback();
     for (int i = 0; i < (1 << 16); ++i) {
       ggml_table_f32_f16[i] = GGML_COMPUTE_FP16_TO_FP32(i);
     }
@@ -56,6 +59,7 @@ class CPUInfer {
     printf("CPUInfer[0x%lx]: Hello\n", (intptr_t)this);
     backend_ = new WorkerPool(config);
     task_queue_ = new TaskQueue();
+    callback_manager_ = new MappedHostCallback();
     for (int i = 0; i < (1 << 16); ++i) {
       ggml_table_f32_f16[i] = GGML_COMPUTE_FP16_TO_FP32(i);
     }
@@ -65,6 +69,7 @@ class CPUInfer {
     printf("CPUInfer[0x%lx]: Goodbye\n", (intptr_t)this);
     delete backend_;
     delete task_queue_;
+    delete callback_manager_;
   }
 
   CPUInfer(const CPUInfer&) = delete;
@@ -72,28 +77,25 @@ class CPUInfer {
   CPUInfer(CPUInfer&&) = delete;
   CPUInfer& operator=(CPUInfer&&) = delete;
 
-  template <typename Func, typename Obj, typename... Args>
-  void enqueue(Func f, Obj* obj, Args... args) {
-    task_queue_->enqueue([=]() { std::invoke(f, *obj, args...); });
-  }
-
   void submit(std::pair<intptr_t, intptr_t> params) {
     void (*func)(void*) = (void (*)(void*))params.first;
     void* args = (void*)params.second;
     *((CPUInfer**)args) = this;
     func(args);
   }
+
 #ifndef KTRANSFORMERS_CPU_ONLY
   void submit_with_cuda_stream(intptr_t user_cuda_stream, std::pair<intptr_t, intptr_t> params) {
 #if defined(KTRANSFORMERS_USE_CUDA)
-    nvtxRangePushA("submit_cudaLaunchHostFunc");
+    nvtxRangePushA("launch_host_func");
     void (*func)(void*) = (void (*)(void*))params.first;
     void* args = (void*)params.second;
     *((CPUInfer**)args) = this;
-    cudaLaunchHostFunc((cudaStream_t)user_cuda_stream, (cudaHostFn_t)func, args);
+
+    callback_manager_->launch_host_func((cudaStream_t)user_cuda_stream, func, args);
     nvtxRangePop();
 #endif
-  }
+    }
 #endif
 
   struct SyncArgs {
@@ -110,19 +112,21 @@ class CPUInfer {
     SyncArgs* args = new SyncArgs{this, allow_n_pending};
     sync_(args);
   }
+
 #ifndef KTRANSFORMERS_CPU_ONLY
   void sync_with_cuda_stream(intptr_t user_cuda_stream, size_t allow_n_pending = 0) {
 #if defined(KTRANSFORMERS_USE_CUDA)
-    nvtxRangePushA("sync_cudaLaunchHostFunc");
-    SyncArgs* args = new SyncArgs{this, allow_n_pending};
-    cudaLaunchHostFunc((cudaStream_t)user_cuda_stream, (cudaHostFn_t)&sync_, (void*)args);
+    nvtxRangePushA("sync_on_gpu");
+    callback_manager_->synchronize_on_gpu((cudaStream_t)user_cuda_stream);
     nvtxRangePop();
 #endif
-  }
+    }
 #endif
+
  public:
   WorkerPool* backend_;
   TaskQueue* task_queue_;
+  static MappedHostCallback* callback_manager_;
 };
 
 #endif
